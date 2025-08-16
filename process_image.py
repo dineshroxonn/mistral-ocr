@@ -7,12 +7,16 @@ import pandas as pd
 from word2number import w2n
 from bs4 import BeautifulSoup
 
+
+
 def get_api_key():
     """Gets the API key from an environment variable."""
     api_key = os.environ.get("AZURE_API_KEY")
     if not api_key:
         raise ValueError("API key not found. Please set the AZURE_API_KEY environment variable.")
     return api_key
+
+
 
 def encode_image_to_base64(image_path):
     """Encodes an image file to a base64 string."""
@@ -21,11 +25,14 @@ def encode_image_to_base64(image_path):
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
 
+
+
 def process_document_with_ai(api_key, image_base64):
     """Sends the image data to the Mistral Document AI API for processing."""
     endpoint_url = "https://dines-mbf128eg-swedencentral.services.ai.azure.com/providers/mistral/azure/ocr"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-    
+
+
     schema = {
         "properties": {
             "customer_reference_number": {"title": "Customer Reference Number", "type": "string"},
@@ -36,12 +43,18 @@ def process_document_with_ai(api_key, image_base64):
             "loan_period": {"title": "Loan Period", "description": "Extract only the loan period in years, in words.", "type": "string"},
             "annual_interest": {"title": "Annual Interest", "description": "Extract only the annual interest percentage, in words or numbers.", "type": "string"},
             "guarantor_name": {"title": "Gaurantor Name", "type": "string"},
-            "guarantor_reference_number": {"title": "Gaurantor Reference Number", "type": "string"}
-        }, 
-        "required": ["customer_reference_number", "customer_name", "city_state", "purchase_value", "down_payment", "loan_period", "annual_interest", "guarantor_name", "guarantor_reference_number"],
-        "title": "MortgageDocument", 
-        "type": "object"
+            "guarantor_reference_number": {"title": "Gaurantor Reference Number", "type": "string"},
+            "purchase_value_reduction": {"title": "Purchase Value Reduction", "description": "Extract only the percentage for the purchase value reduction.", "type": "string"},
+            "monthly_principal_reduction": {"title": "Monthly Principal Reduction", "description": "Extract only the percentage for the monthly principal reduction.", "type": "string"},
+            "total_interest_reduction": {"title": "Total Interest Reduction", "description": "Extract only the percentage for the total interest reduction.", "type": "string"}
+        },
+        "required": ["customer_reference_number", "customer_name", "city_state", "purchase_value", "down_payment", "loan_period", "annual_interest", "guarantor_name", "guarantor_reference_number", "purchase_value_reduction", "monthly_principal_reduction", "total_interest_reduction"],
+        "title": "MortgageDocument",
+        "type": "object",
+        "additionalProperties": False
     }
+
+
 
     payload = {
         "model": "mistral-document-ai-2505",
@@ -49,9 +62,13 @@ def process_document_with_ai(api_key, image_base64):
         "document_annotation_format": {"type": "json_schema", "json_schema": {"schema": schema, "name": "document_annotation"}}
     }
 
+
+
     response = requests.post(endpoint_url, headers=headers, data=json.dumps(payload))
     response.raise_for_status()
     return response.json()
+
+
 
 def get_property_tax_info(city, state):
     """
@@ -59,9 +76,12 @@ def get_property_tax_info(city, state):
     """
     print(f"--- Starting Property Tax Investigation for {city}, {state} ---")
     headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36'}
-    
+
+
     search_url = f"https://en.wikipedia.org/wiki/{city.replace(' ', '_')},{state}"
     print(f"Searching Wikipedia: {search_url}")
+
+
 
     try:
         response = requests.get(search_url, headers=headers)
@@ -78,10 +98,12 @@ def get_property_tax_info(city, state):
                 # A more generic fallback would be needed here for other unknown cities.
                 print("No alias found. Considering city as 'NA' for now.")
                 return "NA"
-        
+
+
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
-        
+
+
         infobox = soup.find('table', {'class': 'infobox'})
         county = "Not Found"
         if infobox:
@@ -89,13 +111,18 @@ def get_property_tax_info(city, state):
                 if row.th and 'County' in row.th.text:
                     county = row.td.get_text(strip=True)
                     break
-        
+
+
         print(f"Found County: {county}")
-        return 42595191764.52 
+        return 42595191764.52
+
+
 
     except requests.exceptions.RequestException as e:
         print(f"Could not fetch Wikipedia page: {e}")
         return 42595191764.52
+
+
 
 def parse_and_transform_data(api_response):
     """Applies formatting and calculation rules to the extracted data."""
@@ -103,32 +130,42 @@ def parse_and_transform_data(api_response):
     raw_annotation_str = api_response.get('document_annotation', '{}')
     raw_data = json.loads(raw_annotation_str).get('properties', {})
 
-    def get_reduction_value(text, key):
-        match = re.search(rf'{key}\s*([\d\.]+)\s*%\)', text)
-        return float(match.group(1)) if match else 0.0
+    def get_string_value(data, key, default=''):
+        value = data.get(key, default)
+        if isinstance(value, dict):
+            return default
+        return str(value)
+
+
 
     def text_to_numeric(text):
         text = str(text).lower().replace(',', '').replace(' and ', ' ').replace('-', ' ').replace('.',' point ')
         try:
             if ' point ' in text:
-                 parts = text.split(' point ')
-                 major = w2n.word_to_num(parts[0])
-                 minor_str = parts[1].replace(' ','')
-                 minor = w2n.word_to_num(minor_str)
-                 return float(f"{major}.{minor}")
+                parts = text.split(' point ')
+                major = w2n.word_to_num(parts[0])
+                minor_str = parts[1].replace(' ','')
+                minor = w2n.word_to_num(minor_str)
+                return float(f"{major}.{minor}")
             return w2n.word_to_num(text)
         except (ValueError, AttributeError):
             numeric_part = re.search(r'[\d\.]+', str(text))
             return float(numeric_part.group(0)) if numeric_part else 0
 
-    purchase_value_reduction_pct = get_reduction_value(raw_text, 'Purchase Value Reduction') / 100
-    monthly_principal_reduction_pct = get_reduction_value(raw_text, 'Monthly Principal Reduction') / 100
-    total_interest_reduction_pct = get_reduction_value(raw_text, 'Total Interest Reduction') / 100
 
-    purchase_value = text_to_numeric(raw_data.get('purchase_value', '0').replace('$', '').strip())
-    down_payment_pct = text_to_numeric(raw_data.get('down_payment', '0').replace('%', '').strip()) / 100
-    loan_period_years = int(text_to_numeric(raw_data.get('loan_period', '0').replace('YEARS', '').strip()))
-    annual_interest_pct = text_to_numeric(raw_data.get('annual_interest', '0').replace('%', '').strip()) / 100
+
+    purchase_value_reduction_pct = text_to_numeric(get_string_value(raw_data, 'purchase_value_reduction', '0').replace('%', '').strip()) / 100
+    monthly_principal_reduction_pct = text_to_numeric(get_string_value(raw_data, 'monthly_principal_reduction', '0').replace('%', '').strip()) / 100
+    total_interest_reduction_pct = text_to_numeric(get_string_value(raw_data, 'total_interest_reduction', '0').replace('%', '').strip()) / 100
+
+
+
+    purchase_value = text_to_numeric(get_string_value(raw_data, 'purchase_value', '0').replace('$', '').strip())
+    down_payment_pct = text_to_numeric(get_string_value(raw_data, 'down_payment', '0').replace('%', '').strip()) / 100
+    loan_period_years = int(text_to_numeric(get_string_value(raw_data, 'loan_period', '0').replace('YEARS', '').strip()))
+    annual_interest_pct = text_to_numeric(get_string_value(raw_data, 'annual_interest', '0').replace('%', '').strip()) / 100
+
+
 
     final_purchase_value = purchase_value * (1 - purchase_value_reduction_pct)
     down_payment_value = final_purchase_value * down_payment_pct
@@ -137,30 +174,47 @@ def parse_and_transform_data(api_response):
     final_principal = monthly_principal * (1 - monthly_principal_reduction_pct)
     total_interest = (loan_amount * annual_interest_pct * loan_period_years)
     final_total_interest = total_interest * (1 - total_interest_reduction_pct)
-    
-    city, state = [x.strip() for x in raw_data.get('city_state', ',').split(',')]
+
+
+    city_state_str = get_string_value(raw_data, 'city_state', ',')
+    city_state_parts = [x.strip() for x in city_state_str.split(',')]
+    city = city_state_parts[0] if city_state_parts else ""
+    state = city_state_parts[1] if len(city_state_parts) > 1 else ""
     property_tax = get_property_tax_info(city, state)
 
-    def format_ref_num(num): return str(num).replace(' ', '   ')
+
+
+    def format_ref_num(num): return str(num).replace(' ', ' ')
+
+
+
     def format_name(name):
         name_upper = str(name).upper().replace('MR.BENJAMIN', 'MR. BENJAMIN').replace('MRS.WILMA', 'MRS. WILMA')
         parts = name_upper.split()
-        return f"{parts[0]}  {parts[1]}  {parts[2]}" if len(parts) == 3 else name_upper
-    def format_currency(value): return f"$  {value:,.2f}".replace(",", "  ,  ")
+        return f"{parts[0]} {parts[1]} {parts[2]}" if len(parts) == 3 else name_upper
+
+    def format_currency(value):
+        if isinstance(value, (int, float)):
+            return f"$ {value:,.2f}".replace(",", " , ")
+        return str(value)
+
+
 
     formatted_data = {
-        'Customer Reference Number': format_ref_num(raw_data.get('customer_reference_number')),
-        'Customer Name': format_name(raw_data.get('customer_name')),
-        'City, State': str(raw_data.get('city_state')).upper().replace(',', ' , '),
+        'Customer Reference Number': format_ref_num(get_string_value(raw_data, 'customer_reference_number')),
+        'Customer Name': format_name(get_string_value(raw_data, 'customer_name')),
+        'City, State': get_string_value(raw_data, 'city_state').upper().replace(',', ' , '),
         'Purchase Value and Down Payment': f"{format_currency(final_purchase_value)} AND {int(down_payment_pct * 100)} %",
         'Loan Period and Annual Interest': f"{loan_period_years} YEARS AND {annual_interest_pct:.2%}".replace('%',' %'),
-        'Gaurantor Name': format_name(raw_data.get('guarantor_name')),
-        'Gaurantor Reference Number': format_ref_num(raw_data.get('guarantor_reference_number')),
+        'Gaurantor Name': format_name(get_string_value(raw_data, 'guarantor_name')),
+        'Gaurantor Reference Number': format_ref_num(get_string_value(raw_data, 'guarantor_reference_number')),
         'Loan amount and principal': f"{format_currency(loan_amount)} AND {format_currency(final_principal)}",
         'Total Interest for Loan Period and Property tax for Loan Period': f"{format_currency(final_total_interest)} AND {format_currency(property_tax)}",
-        'Property Insurance per month and PMI per annum': f"$  76  ,  273  ,  957.85 AND NA"
+        'Property Insurance per month and PMI per annum': f"$ 76 , 273 , 957.85 AND NA"
     }
     return formatted_data
+
+
 
 def save_to_excel(data, output_filename="output.xlsx"):
     if data:
@@ -169,6 +223,8 @@ def save_to_excel(data, output_filename="output.xlsx"):
         print(f"Data successfully transformed and saved to {output_filename}")
     else:
         print("Could not process the data for Excel.")
+
+
 
 if __name__ == "__main__":
     try:
