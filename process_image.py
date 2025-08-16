@@ -4,7 +4,6 @@ import os
 import re
 import requests
 import pandas as pd
-from word2number import w2n
 from bs4 import BeautifulSoup
 
 
@@ -38,15 +37,15 @@ def process_document_with_ai(api_key, image_base64):
             "customer_reference_number": {"title": "Customer Reference Number", "type": "string"},
             "customer_name": {"title": "Customer Name", "type": "string"},
             "city_state": {"title": "City, State", "type": "string"},
-            "purchase_value": {"title": "Purchase Value", "description": "Extract only the currency amount for the purchase value, in words.", "type": "string"},
-            "down_payment": {"title": "Down Payment", "description": "Extract only the percentage for the down payment, in words or numbers.", "type": "string"},
-            "loan_period": {"title": "Loan Period", "description": "Extract only the loan period in years, in words.", "type": "string"},
-            "annual_interest": {"title": "Annual Interest", "description": "Extract only the annual interest percentage, in words or numbers.", "type": "string"},
+            "purchase_value": {"title": "Purchase Value", "description": "Extract only the currency amount for the purchase value, as a number.", "type": "number"},
+            "down_payment": {"title": "Down Payment", "description": "Extract only the percentage for the down payment, as a number.", "type": "number"},
+            "loan_period": {"title": "Loan Period", "description": "Extract only the loan period in years, as a number.", "type": "number"},
+            "annual_interest": {"title": "Annual Interest", "description": "Extract only the annual interest percentage, as a number.", "type": "number"},
             "guarantor_name": {"title": "Gaurantor Name", "type": "string"},
             "guarantor_reference_number": {"title": "Gaurantor Reference Number", "type": "string"},
-            "purchase_value_reduction": {"title": "Purchase Value Reduction", "description": "Extract only the percentage for the purchase value reduction.", "type": "string"},
-            "monthly_principal_reduction": {"title": "Monthly Principal Reduction", "description": "Extract only the percentage for the monthly principal reduction.", "type": "string"},
-            "total_interest_reduction": {"title": "Total Interest Reduction", "description": "Extract only the percentage for the total interest reduction.", "type": "string"}
+            "purchase_value_reduction": {"title": "Purchase Value Reduction", "description": "Extract only the percentage for the purchase value reduction, as a number.", "type": "number"},
+            "monthly_principal_reduction": {"title": "Monthly Principal Reduction", "description": "Extract only the percentage for the monthly principal reduction, as a number.", "type": "number"},
+            "total_interest_reduction": {"title": "Total Interest Reduction", "description": "Extract only the percentage for the total interest reduction, as a number.", "type": "number"}
         },
         "required": ["customer_reference_number", "customer_name", "city_state", "purchase_value", "down_payment", "loan_period", "annual_interest", "guarantor_name", "guarantor_reference_number", "purchase_value_reduction", "monthly_principal_reduction", "total_interest_reduction"],
         "title": "MortgageDocument",
@@ -126,46 +125,17 @@ def get_property_tax_info(city, state):
 
 def parse_and_transform_data(api_response):
     """Applies formatting and calculation rules to the extracted data."""
-    raw_text = api_response['pages'][0]['markdown']
     raw_annotation_str = api_response.get('document_annotation', '{}')
     raw_data = json.loads(raw_annotation_str).get('properties', {})
 
-    def get_string_value(data, key, default=''):
-        value = data.get(key, default)
-        if isinstance(value, dict):
-            return default
-        return str(value)
+    purchase_value_reduction_pct = raw_data.get('purchase_value_reduction', 0) / 100
+    monthly_principal_reduction_pct = raw_data.get('monthly_principal_reduction', 0) / 100
+    total_interest_reduction_pct = raw_data.get('total_interest_reduction', 0) / 100
 
-
-
-    def text_to_numeric(text):
-        text = str(text).lower().replace(',', '').replace(' and ', ' ').replace('-', ' ').replace('.',' point ')
-        try:
-            if ' point ' in text:
-                parts = text.split(' point ')
-                major = w2n.word_to_num(parts[0])
-                minor_str = parts[1].replace(' ','')
-                minor = w2n.word_to_num(minor_str)
-                return float(f"{major}.{minor}")
-            return w2n.word_to_num(text)
-        except (ValueError, AttributeError):
-            numeric_part = re.search(r'[\d\.]+', str(text))
-            return float(numeric_part.group(0)) if numeric_part else 0
-
-
-
-    purchase_value_reduction_pct = text_to_numeric(get_string_value(raw_data, 'purchase_value_reduction', '0').replace('%', '').strip()) / 100
-    monthly_principal_reduction_pct = text_to_numeric(get_string_value(raw_data, 'monthly_principal_reduction', '0').replace('%', '').strip()) / 100
-    total_interest_reduction_pct = text_to_numeric(get_string_value(raw_data, 'total_interest_reduction', '0').replace('%', '').strip()) / 100
-
-
-
-    purchase_value = text_to_numeric(get_string_value(raw_data, 'purchase_value', '0').replace('$', '').strip())
-    down_payment_pct = text_to_numeric(get_string_value(raw_data, 'down_payment', '0').replace('%', '').strip()) / 100
-    loan_period_years = int(text_to_numeric(get_string_value(raw_data, 'loan_period', '0').replace('YEARS', '').strip()))
-    annual_interest_pct = text_to_numeric(get_string_value(raw_data, 'annual_interest', '0').replace('%', '').strip()) / 100
-
-
+    purchase_value = raw_data.get('purchase_value', 0)
+    down_payment_pct = raw_data.get('down_payment', 0) / 100
+    loan_period_years = int(raw_data.get('loan_period', 0))
+    annual_interest_pct = raw_data.get('annual_interest', 0) / 100
 
     final_purchase_value = purchase_value * (1 - purchase_value_reduction_pct)
     down_payment_value = final_purchase_value * down_payment_pct
@@ -175,8 +145,7 @@ def parse_and_transform_data(api_response):
     total_interest = (loan_amount * annual_interest_pct * loan_period_years)
     final_total_interest = total_interest * (1 - total_interest_reduction_pct)
 
-
-    city_state_str = get_string_value(raw_data, 'city_state', ',')
+    city_state_str = raw_data.get('city_state', ',')
     city_state_parts = [x.strip() for x in city_state_str.split(',')]
     city = city_state_parts[0] if city_state_parts else ""
     state = city_state_parts[1] if len(city_state_parts) > 1 else ""
@@ -201,13 +170,13 @@ def parse_and_transform_data(api_response):
 
 
     formatted_data = {
-        'Customer Reference Number': format_ref_num(get_string_value(raw_data, 'customer_reference_number')),
-        'Customer Name': format_name(get_string_value(raw_data, 'customer_name')),
-        'City, State': get_string_value(raw_data, 'city_state').upper().replace(',', ' , '),
+        'Customer Reference Number': format_ref_num(raw_data.get('customer_reference_number')),
+        'Customer Name': format_name(raw_data.get('customer_name')),
+        'City, State': raw_data.get('city_state', '').upper().replace(',', ' , '),
         'Purchase Value and Down Payment': f"{format_currency(final_purchase_value)} AND {int(down_payment_pct * 100)} %",
         'Loan Period and Annual Interest': f"{loan_period_years} YEARS AND {annual_interest_pct:.2%}".replace('%',' %'),
-        'Gaurantor Name': format_name(get_string_value(raw_data, 'guarantor_name')),
-        'Gaurantor Reference Number': format_ref_num(get_string_value(raw_data, 'guarantor_reference_number')),
+        'Gaurantor Name': format_name(raw_data.get('guarantor_name')),
+        'Gaurantor Reference Number': format_ref_num(raw_data.get('guarantor_reference_number')),
         'Loan amount and principal': f"{format_currency(loan_amount)} AND {format_currency(final_principal)}",
         'Total Interest for Loan Period and Property tax for Loan Period': f"{format_currency(final_total_interest)} AND {format_currency(property_tax)}",
         'Property Insurance per month and PMI per annum': f"$ 76 , 273 , 957.85 AND NA"
