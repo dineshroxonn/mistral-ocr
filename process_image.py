@@ -5,6 +5,8 @@ import re
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
+import sys
+import time
 
 
 
@@ -32,7 +34,7 @@ def process_document_with_ai(api_key, image_base64):
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
 
 
-    schema = {
+    record_schema = {
         "properties": {
             "customer_reference_number": {"title": "Customer Reference Number", "type": "string"},
             "customer_name": {"title": "Customer Name", "type": "string"},
@@ -51,6 +53,18 @@ def process_document_with_ai(api_key, image_base64):
         "title": "MortgageDocument",
         "type": "object",
         "additionalProperties": False
+    }
+
+    schema = {
+        "properties": {
+            "records": {
+                "type": "array",
+                "description": "A list of all records found in the document.",
+                "items": record_schema
+            }
+        },
+        "required": ["records"],
+        "type": "object"
     }
 
 
@@ -126,68 +140,83 @@ def get_property_tax_info(city, state):
 def parse_and_transform_data(api_response):
     """Applies formatting and calculation rules to the extracted data."""
     raw_annotation_str = api_response.get('document_annotation', '{}')
-    raw_data = json.loads(raw_annotation_str).get('properties', {})
+    annotation_data = json.loads(raw_annotation_str)
+    
+    records = []
+    if 'properties' in annotation_data and 'records' in annotation_data['properties']:
+        records = annotation_data['properties']['records']
+    elif 'records' in annotation_data:
+        records = annotation_data['records']
+    elif isinstance(annotation_data, list):
+        records = annotation_data
+    
+    if not records and 'properties' in annotation_data:
+        if 'customer_reference_number' in annotation_data['properties']:
+             records = [annotation_data['properties']]
 
-    purchase_value_reduction_pct = raw_data.get('purchase_value_reduction', 0) / 100
-    monthly_principal_reduction_pct = raw_data.get('monthly_principal_reduction', 0) / 100
-    total_interest_reduction_pct = raw_data.get('total_interest_reduction', 0) / 100
+    all_formatted_data = []
+    for raw_data in records:
+        purchase_value_reduction_pct = raw_data.get('purchase_value_reduction', 0) / 100
+        monthly_principal_reduction_pct = raw_data.get('monthly_principal_reduction', 0) / 100
+        total_interest_reduction_pct = raw_data.get('total_interest_reduction', 0) / 100
 
-    purchase_value = raw_data.get('purchase_value', 0)
-    down_payment_pct = raw_data.get('down_payment', 0) / 100
-    loan_period_years = int(raw_data.get('loan_period', 0))
-    annual_interest_pct = raw_data.get('annual_interest', 0) / 100
+        purchase_value = raw_data.get('purchase_value', 0)
+        down_payment_pct = raw_data.get('down_payment', 0) / 100
+        loan_period_years = int(raw_data.get('loan_period', 0))
+        annual_interest_pct = raw_data.get('annual_interest', 0) / 100
 
-    final_purchase_value = purchase_value * (1 - purchase_value_reduction_pct)
-    down_payment_value = final_purchase_value * down_payment_pct
-    loan_amount = final_purchase_value - down_payment_value
-    monthly_principal = (loan_amount / (loan_period_years * 12)) if loan_period_years > 0 else 0
-    final_principal = monthly_principal * (1 - monthly_principal_reduction_pct)
-    total_interest = (loan_amount * annual_interest_pct * loan_period_years)
-    final_total_interest = total_interest * (1 - total_interest_reduction_pct)
+        final_purchase_value = purchase_value * (1 - purchase_value_reduction_pct)
+        down_payment_value = final_purchase_value * down_payment_pct
+        loan_amount = final_purchase_value - down_payment_value
+        monthly_principal = (loan_amount / (loan_period_years * 12)) if loan_period_years > 0 else 0
+        final_principal = monthly_principal * (1 - monthly_principal_reduction_pct)
+        total_interest = (loan_amount * annual_interest_pct * loan_period_years)
+        final_total_interest = total_interest * (1 - total_interest_reduction_pct)
 
-    city_state_str = raw_data.get('city_state', ',')
-    city_state_parts = [x.strip() for x in city_state_str.split(',')]
-    city = city_state_parts[0] if city_state_parts else ""
-    state = city_state_parts[1] if len(city_state_parts) > 1 else ""
-    property_tax = get_property_tax_info(city, state)
-
-
-
-    def format_ref_num(num): return str(num).replace(' ', ' ')
-
-
-
-    def format_name(name):
-        name_upper = str(name).upper().replace('MR.BENJAMIN', 'MR. BENJAMIN').replace('MRS.WILMA', 'MRS. WILMA')
-        parts = name_upper.split()
-        return f"{parts[0]} {parts[1]} {parts[2]}" if len(parts) == 3 else name_upper
-
-    def format_currency(value):
-        if isinstance(value, (int, float)):
-            return f"$ {value:,.2f}".replace(",", " , ")
-        return str(value)
+        city_state_str = raw_data.get('city_state', ',')
+        city_state_parts = [x.strip() for x in city_state_str.split(',')]
+        city = city_state_parts[0] if city_state_parts else ""
+        state = city_state_parts[1] if len(city_state_parts) > 1 else ""
+        property_tax = get_property_tax_info(city, state)
 
 
 
-    formatted_data = {
-        'Customer Reference Number': format_ref_num(raw_data.get('customer_reference_number')),
-        'Customer Name': format_name(raw_data.get('customer_name')),
-        'City, State': raw_data.get('city_state', '').upper().replace(',', ' , '),
-        'Purchase Value and Down Payment': f"{format_currency(final_purchase_value)} AND {int(down_payment_pct * 100)} %",
-        'Loan Period and Annual Interest': f"{loan_period_years} YEARS AND {annual_interest_pct:.2%}".replace('%',' %'),
-        'Gaurantor Name': format_name(raw_data.get('guarantor_name')),
-        'Gaurantor Reference Number': format_ref_num(raw_data.get('guarantor_reference_number')),
-        'Loan amount and principal': f"{format_currency(loan_amount)} AND {format_currency(final_principal)}",
-        'Total Interest for Loan Period and Property tax for Loan Period': f"{format_currency(final_total_interest)} AND {format_currency(property_tax)}",
-        'Property Insurance per month and PMI per annum': f"$ 76 , 273 , 957.85 AND NA"
-    }
-    return formatted_data
+        def format_ref_num(num): return str(num).replace(' ', ' ')
+
+
+
+        def format_name(name):
+            name_upper = str(name).upper()
+            parts = name_upper.split()
+            return ' '.join(parts)
+
+        def format_currency(value):
+            if isinstance(value, (int, float)):
+                return f"$ {value:,.2f}".replace(",", " , ")
+            return str(value)
+
+
+
+        formatted_data = {
+            'Customer Reference Number': format_ref_num(raw_data.get('customer_reference_number')),
+            'Customer Name': format_name(raw_data.get('customer_name')),
+            'City, State': raw_data.get('city_state', '').upper().replace(',', ' , '),
+            'Purchase Value and Down Payment': f"{format_currency(final_purchase_value)} AND {int(down_payment_pct * 100)} %",
+            'Loan Period and Annual Interest': f"{loan_period_years} YEARS AND {annual_interest_pct:.2%}",
+            'Gaurantor Name': format_name(raw_data.get('guarantor_name')),
+            'Gaurantor Reference Number': format_ref_num(raw_data.get('guarantor_reference_number')),
+            'Loan amount and principal': f"{format_currency(loan_amount)} AND {format_currency(final_principal)}",
+            'Total Interest for Loan Period and Property tax for Loan Period': f"{format_currency(final_total_interest)} AND {format_currency(property_tax)}",
+            'Property Insurance per month and PMI per annum': f"$ 76 , 273 , 957.85 AND NA"
+        }
+        all_formatted_data.append(formatted_data)
+    return all_formatted_data
 
 
 
 def save_to_excel(data, output_filename="output.xlsx"):
     if data:
-        df = pd.DataFrame([data])
+        df = pd.DataFrame(data)
         df.to_excel(output_filename, index=False)
         print(f"Data successfully transformed and saved to {output_filename}")
     else:
@@ -196,14 +225,42 @@ def save_to_excel(data, output_filename="output.xlsx"):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) < 2 or len(sys.argv) > 3:
+        print("Usage: python3 process_image.py <folder_path> [output_folder_path]")
+        sys.exit(1)
+
+    folder_path = sys.argv[1]
+    output_folder = sys.argv[2] if len(sys.argv) == 3 else "."
+
+    if not os.path.isdir(folder_path):
+        print(f"Error: Folder not found at: {folder_path}")
+        sys.exit(1)
+
+    if not os.path.isdir(output_folder):
+        os.makedirs(output_folder)
+
     try:
         api_key = get_api_key()
-        image_path = "/Users/dineshrampalli/Downloads/Workload0001.jpg"
-        print("Step 1: Extracting data from image...")
-        api_result = process_document_with_ai(api_key, encode_image_to_base64(image_path))
-        print("Step 2: Applying formatting, calculations, and flowchart logic...")
-        transformed_data = parse_and_transform_data(api_result)
-        print("Step 3: Saving final formatted data to Excel...")
-        save_to_excel(transformed_data)
+        filenames = sorted(os.listdir(folder_path))
+        for filename in filenames:
+            if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                image_path = os.path.join(folder_path, filename)
+                print(f"Processing {image_path}...")
+                try:
+                    print("Step 1: Extracting data from image...")
+                    api_result = process_document_with_ai(api_key, encode_image_to_base64(image_path))
+                    print("Step 2: Applying formatting, calculations, and flowchart logic...")
+                    transformed_data = parse_and_transform_data(api_result)
+                    
+                    output_filename = os.path.splitext(filename)[0] + ".xlsx"
+                    output_path = os.path.join(output_folder, output_filename)
+                    
+                    print(f"Step 3: Saving final formatted data to {output_path}...")
+                    save_to_excel(transformed_data, output_path)
+                    
+                    time.sleep(2)
+                except Exception as e:
+                    print(f"An error occurred while processing {filename}: {e}")
+
     except Exception as e:
         print(f"An error occurred: {e}")
