@@ -239,6 +239,7 @@ if __name__ == "__main__":
     if not os.path.isdir(output_folder):
         os.makedirs(output_folder)
 
+    all_data = []
     try:
         api_key = get_api_key()
         filenames = sorted(os.listdir(folder_path))
@@ -251,16 +252,14 @@ if __name__ == "__main__":
                     api_result = process_document_with_ai(api_key, encode_image_to_base64(image_path))
                     print("Step 2: Applying formatting, calculations, and flowchart logic...")
                     transformed_data = parse_and_transform_data(api_result)
-                    
-                    output_filename = os.path.splitext(filename)[0] + ".xlsx"
-                    output_path = os.path.join(output_folder, output_filename)
-                    
-                    print(f"Step 3: Saving final formatted data to {output_path}...")
-                    save_to_excel(transformed_data, output_path)
-                    
+                    all_data.extend(transformed_data)
                     time.sleep(2)
                 except Exception as e:
                     print(f"An error occurred while processing {filename}: {e}")
+        
+        output_path = os.path.join(output_folder, "output.xlsx")
+        print(f"Step 3: Saving final formatted data to {output_path}...")
+        save_to_excel(all_data, output_path)
 
     except Exception as e:
         print(f"An error occurred: {e}")
